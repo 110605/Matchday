@@ -166,6 +166,28 @@
     .sb-score{animation:none;}
   }
 
+  /* Coin flip */
+  .coin-wrap{perspective:600px;display:flex;justify-content:center;padding:24px 0;}
+  .coin{
+    width:110px;height:110px;border-radius:50%;
+    background:linear-gradient(145deg, var(--amber), #B8860B);
+    display:flex;align-items:center;justify-content:center;
+    font-family:'Teko',sans-serif;font-size:22px;font-weight:700;color:#1B1400;letter-spacing:0.03em;
+    box-shadow:0 8px 20px rgba(242,183,5,0.3), inset 0 2px 4px rgba(255,255,255,0.5);
+    transform-style:preserve-3d;
+  }
+  .coin.flipping{ animation: coinFlip 0.9s cubic-bezier(.2,.7,.3,1); }
+  @keyframes coinFlip{
+    0%{transform:rotateY(0deg) translateY(0);}
+    20%{transform:rotateY(360deg) translateY(-34px);}
+    45%{transform:rotateY(900deg) translateY(0);}
+    70%{transform:rotateY(1440deg) translateY(-16px);}
+    100%{transform:rotateY(1800deg) translateY(0);}
+  }
+  @media (prefers-reduced-motion: reduce){
+    .coin.flipping{ animation:none; }
+  }
+
   .batters{display:flex;flex-direction:column;gap:8px;margin-top:16px;}
   .batter-row{display:flex;align-items:center;background:var(--surface-2);border-radius:10px;padding:10px 14px;}
   .batter-row.striker{border:1px solid var(--amber-dim);}
@@ -201,6 +223,14 @@
   .result-hero h2{font-family:'Teko';font-size:34px;margin:8px 0 2px;}
   .result-hero p{color:var(--ink-dim);font-size:14px;}
 
+  .awards-grid{display:flex;flex-direction:column;gap:10px;margin-top:26px;}
+  .award-card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:12px;}
+  .award-card.motm{border-color:var(--amber-dim);background:linear-gradient(135deg, rgba(242,183,5,0.08), var(--surface) 60%);}
+  .award-icon{font-size:20px;flex-shrink:0;}
+  .award-label{font-size:10px;color:var(--ink-dim);text-transform:uppercase;letter-spacing:0.06em;font-weight:600;}
+  .award-name{font-family:'Teko';font-size:20px;line-height:1.1;}
+  .award-stat{margin-left:auto;font-family:'JetBrains Mono';font-size:13px;color:var(--amber);white-space:nowrap;}
+
   .team-input-block{background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:10px;}
   .rm-btn{background:none;border:none;color:var(--red);font-size:12px;cursor:pointer;float:right;}
 </style>
@@ -215,10 +245,54 @@ let state = {
   cricket: null
 };
 let modal = null;
+let undoSnapshot = null;
 
 function setState(patch){ state = {...state, ...patch}; render(); }
 function openModal(m){ modal = m; render(); }
 function closeModal(){ modal = null; render(); }
+
+/* ---------------- UNDO ---------------- */
+function pushUndoSnapshot(){
+  try{ undoSnapshot = JSON.stringify(state); }catch(e){ undoSnapshot = null; }
+}
+function performUndo(){
+  if(!undoSnapshot) return;
+  try{ state = JSON.parse(undoSnapshot); }catch(e){}
+  undoSnapshot = null;
+  render();
+}
+
+/* ---------------- SESSION PERSISTENCE (survives accidental refresh) ---------------- */
+const SESSION_KEY = 'matchday_session_v1';
+function saveSession(){
+  try{
+    if(state.screen === 'home'){ localStorage.removeItem(SESSION_KEY); return; }
+    localStorage.setItem(SESSION_KEY, JSON.stringify(state));
+  }catch(e){ /* storage unavailable - fail silently, in-memory session still works */ }
+}
+function loadSession(){
+  try{
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  }catch(e){ return null; }
+}
+function clearSession(){
+  try{ localStorage.removeItem(SESSION_KEY); }catch(e){}
+}
+
+function isMidMatch(){
+  if(state.screen === 'pk-play'){
+    return state.pickle.boxes.some(b=> b.schedule.some(m=>!m.played));
+  }
+  return ['ck-toss','ck-openers','ck-live'].includes(state.screen);
+}
+
+window.addEventListener('beforeunload', function(e){
+  if(isMidMatch()){
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
 
 /* ---------------- HELPERS ---------------- */
 function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstChild; }
@@ -271,6 +345,7 @@ function render(){
   main.appendChild(screenEl);
   app.appendChild(main);
   if(modal) app.appendChild(renderModal());
+  saveSession();
 }
 
 function renderTopbar(){
@@ -403,8 +478,9 @@ function screenPickleSetup(){
 
 /* ================= PICKLE: PLAY ================= */
 function screenPicklePlay(){
-  const wrap = el(`<div><h1 class="hero" style="font-size:34px;">Today's boxes</h1><p class="sub">Tap a match to enter the score once it's done.</p><div id="boxesArea"></div></div>`);
+  const wrap = el(`<div><h1 class="hero" style="font-size:34px;">Today's boxes</h1><p class="sub">Tap a match to enter the score once it's done.</p><button class="btn btn-outline" id="pkUndoBtn" ${undoSnapshot ? '' : 'disabled'} style="margin-top:0;margin-bottom:18px;">↶ Undo last action</button><div id="boxesArea"></div></div>`);
   const area = wrap.querySelector('#boxesArea');
+  wrap.querySelector('#pkUndoBtn').onclick = performUndo;
 
   state.pickle.boxes.forEach((box, boxIdx)=>{
     const allPlayed = box.schedule.every(m=>m.played);
@@ -480,6 +556,7 @@ function renderPickleScoreModal(m){
     const a = parseInt(wrap.querySelector('#scoreA').value);
     const b = parseInt(wrap.querySelector('#scoreB').value);
     if(isNaN(a) || isNaN(b)){ return; }
+    pushUndoSnapshot();
     match.scoreA = a; match.scoreB = b; match.played = true;
     closeModal();
   };
@@ -540,37 +617,63 @@ function screenCricketSetup(){
 }
 
 /* ================= CRICKET: TOSS ================= */
+function cryptoRandom(){
+  try{
+    const arr = new Uint32Array(1);
+    crypto.getRandomValues(arr);
+    return arr[0] / 4294967296;
+  }catch(e){
+    return Math.random();
+  }
+}
+
 function screenCricketToss(){
   const c = state.cricket;
   const wrap = el(`<div>
     <h1 class="hero" style="font-size:34px;">Toss time</h1>
     <p class="sub">${esc(c.teamA.name)} vs ${esc(c.teamB.name)}</p>
-    <div class="scoreboard">
-      <div class="sb-teams">Virtual coin</div>
-      <div class="sb-score" id="coinFace" style="font-size:38px;">?</div>
+    <div class="coin-wrap">
+      <div class="coin" id="coinFace">?</div>
     </div>
     <button class="btn btn-amber" id="flipBtn">Flip coin</button>
     <div id="afterToss"></div>
   </div>`);
 
   wrap.querySelector('#flipBtn').onclick = ()=>{
-    const winner = Math.random() < 0.5 ? c.teamA : c.teamB;
-    const winnerKey = winner === c.teamA ? 'teamA' : 'teamB';
-    const face = Math.random() < 0.5 ? 'HEADS' : 'TAILS';
-    wrap.querySelector('#coinFace').textContent = face;
-    c.tossWinner = winnerKey;
-    const after = wrap.querySelector('#afterToss');
-    after.innerHTML = '';
-    const p = el(`<div>
-      <p class="sub" style="margin-top:16px;"><b style="color:var(--ink);">${esc(winner.name)}</b> won the toss. Bat or bowl?</p>
-      <div class="btn-row">
-        <button class="btn btn-green" id="chooseBat">Bat</button>
-        <button class="btn btn-outline" id="chooseBowl">Bowl</button>
-      </div>
-    </div>`);
-    p.querySelector('#chooseBat').onclick = ()=> setupInnings(winnerKey, winnerKey);
-    p.querySelector('#chooseBowl').onclick = ()=> setupInnings(winnerKey, winnerKey==='teamA'?'teamB':'teamA');
-    after.appendChild(p);
+    const flipBtn = wrap.querySelector('#flipBtn');
+    const coinEl = wrap.querySelector('#coinFace');
+    if(flipBtn.disabled) return;
+    flipBtn.disabled = true;
+
+    // single random draw decides BOTH the displayed face and the toss winner, so they can never contradict
+    const r = cryptoRandom();
+    const face = r < 0.5 ? 'HEADS' : 'TAILS';
+    const winnerKey = r < 0.5 ? 'teamA' : 'teamB';
+    const winner = c[winnerKey];
+
+    coinEl.textContent = '';
+    coinEl.classList.remove('flipping');
+    void coinEl.offsetWidth; // restart animation
+    coinEl.classList.add('flipping');
+
+    setTimeout(()=>{
+      coinEl.textContent = face;
+      c.tossWinner = winnerKey;
+      const after = wrap.querySelector('#afterToss');
+      after.innerHTML = '';
+      const p = el(`<div>
+        <p class="sub" style="margin-top:16px;"><b style="color:var(--ink);">${esc(winner.name)}</b> won the toss. Bat or bowl?</p>
+        <div class="btn-row">
+          <button class="btn btn-green" id="chooseBat">Bat</button>
+          <button class="btn btn-outline" id="chooseBowl">Bowl</button>
+        </div>
+      </div>`);
+      p.querySelector('#chooseBat').onclick = ()=> setupInnings(winnerKey, winnerKey);
+      p.querySelector('#chooseBowl').onclick = ()=> setupInnings(winnerKey, winnerKey==='teamA'?'teamB':'teamA');
+      after.appendChild(p);
+      flipBtn.disabled = false;
+      flipBtn.textContent = 'Flip again';
+    }, 900);
   };
 
   function setupInnings(tossWinnerKey, battingKey){
@@ -671,117 +774,185 @@ function screenCricketLive(){
     </div>
     <div class="extrabtns">
       <div class="extrabtn" id="wideBtn">Wide (+1)</div>
-      <div class="extrabtn" id="noballBtn">No ball (+1)</div>
+      <div class="extrabtn" id="noballBtn">No ball…</div>
       <div class="extrabtn" id="swapBtn">Swap strike</div>
     </div>
     <div class="wicketbtn" id="wicketBtn">Wicket</div>
 
     <div class="ballfeed">${c.ballFeed.slice(-12).map(b=>`<div class="ball-chip ${b==='W'?'wk':b==='4'?'four':b==='6'?'six':''}">${b}</div>`).join('')}</div>
 
-    <button class="btn btn-outline" id="endInningsBtn" style="margin-top:22px;">End innings now</button>
+    <button class="btn btn-outline" id="undoBtn" ${undoSnapshot ? '' : 'disabled'} style="margin-top:22px;">↶ Undo last action</button>
+    <button class="btn btn-outline" id="endInningsBtn">End innings now</button>
   </div>`);
 
-  function addBall(runs, legal, extraLabel){
-    if(legal){
-      c.battingStats[c.striker].balls++;
-      c.bowlingStats[c.bowler].balls++;
-    }
-    c.battingStats[c.striker].runs += (extraLabel ? 0 : runs);
-    c.bowlingStats[c.bowler].runs += runs;
-    c.score += runs;
-    c.ballFeed.push(extraLabel ? extraLabel : String(runs));
-
-    if(legal){
-      c.ballsThisOver++;
-      if(runs % 2 === 1) swapStrike();
-      if(c.ballsThisOver >= 6){
-        c.oversCompleted++;
-        c.ballsThisOver = 0;
-        swapStrike();
-        c.prevBowler = c.bowler;
-        checkInningsEnd();
-        if(!inningsEnded) promptNewBowler();
-        return;
-      }
-    }
-    checkInningsEnd();
-    if(!inningsEnded) render();
-  }
-
-  let inningsEnded = false;
-  function checkInningsEnd(){
-    const oversDone = c.oversCompleted >= c.overs;
-    const chased = c.innings===2 && c.score >= c.target;
-    const allOut = c.wickets >= (c[c.battingTeamKey].players.length - 1);
-    if(allOut || oversDone || chased){
-      inningsEnded = true;
-      finishInnings();
-    }
-  }
-
-  function swapStrike(){
-    const tmp = c.striker; c.striker = c.nonStriker; c.nonStriker = tmp;
-  }
-
-  function finishInnings(){
-    if(c.innings === 1){
-      c.firstInningsScore = c.score;
-      c.firstInningsTeamKey = c.battingTeamKey;
-      const newBatting = c.bowlingTeamKey;
-      const newBowling = c.battingTeamKey;
-      c.battingTeamKey = newBatting;
-      c.bowlingTeamKey = newBowling;
-      c.innings = 2;
-      c.target = c.firstInningsScore + 1;
-      c.score = 0; c.wickets = 0; c.ballsThisOver = 0; c.oversCompleted = 0;
-      c.striker = null; c.nonStriker = null; c.bowler = null;
-      c.battingStats = {}; c.bowlingStats = {}; c.ballFeed = []; c.prevBowler = null;
-      setState({screen:'ck-openers'});
-    } else {
-      setState({screen:'ck-result'});
-    }
-  }
-
-  function promptNewBowler(){
-    const bowlTeam = c[c.bowlingTeamKey];
-    openModal({type:'pick-bowler', options: bowlTeam.players.filter(p=>p!==c.prevBowler)});
-  }
-
-  function handleWicket(){
-    const bowlerStats = c.bowlingStats[c.bowler];
-    c.battingStats[c.striker].balls++;
-    bowlerStats.balls++;
-    bowlerStats.wickets++;
-    c.wickets++;
-    c.ballFeed.push('W');
-    c.ballsThisOver++;
-    const outBatsman = c.striker;
-    if(c.ballsThisOver >= 6){
-      c.oversCompleted++;
-      c.ballsThisOver = 0;
-      c.prevBowler = c.bowler;
-    }
-    checkInningsEnd();
-    if(inningsEnded) return;
-    const usedPlayers = new Set([...Object.keys(c.battingStats)]);
-    const available = c[c.battingTeamKey].players.filter(p=> !usedPlayers.has(p));
-    if(available.length === 0){ finishInnings(); return; }
-    openModal({type:'pick-batsman', options: available, replacing: outBatsman});
-  }
-
   wrap.querySelectorAll('.runbtn').forEach(btn=>{
-    btn.onclick = ()=> addBall(parseInt(btn.dataset.r), true, null);
+    btn.onclick = ()=> cricketAddBall(parseInt(btn.dataset.r), true, null);
   });
-  wrap.querySelector('#wideBtn').onclick = ()=> addBall(1, false, 'Wd');
-  wrap.querySelector('#noballBtn').onclick = ()=> addBall(1, false, 'Nb');
-  wrap.querySelector('#swapBtn').onclick = ()=>{ swapStrike(); render(); };
-  wrap.querySelector('#wicketBtn').onclick = handleWicket;
-  wrap.querySelector('#endInningsBtn').onclick = ()=>{ inningsEnded = true; finishInnings(); };
+  wrap.querySelector('#wideBtn').onclick = ()=> cricketAddBall(1, false, 'Wd');
+  wrap.querySelector('#noballBtn').onclick = ()=> openModal({type:'noball-runs'});
+  wrap.querySelector('#swapBtn').onclick = ()=>{ pushUndoSnapshot(); cricketSwapStrike(); render(); };
+  wrap.querySelector('#wicketBtn').onclick = cricketHandleWicket;
+  wrap.querySelector('#endInningsBtn').onclick = ()=>{ pushUndoSnapshot(); cricketFinishInnings(); };
+  wrap.querySelector('#undoBtn').onclick = performUndo;
 
   return wrap;
 }
 
+/* ---- Cricket scoring logic (module-level so modals can call it too) ---- */
+function cricketSwapStrike(){
+  const c = state.cricket;
+  const tmp = c.striker; c.striker = c.nonStriker; c.nonStriker = tmp;
+}
+
+function cricketCheckInningsEnd(){
+  const c = state.cricket;
+  const oversDone = c.oversCompleted >= c.overs;
+  const chased = c.innings===2 && c.score >= c.target;
+  const allOut = c.wickets >= (c[c.battingTeamKey].players.length - 1);
+  if(allOut || oversDone || chased){
+    cricketFinishInnings();
+    return true;
+  }
+  return false;
+}
+
+function cricketFinishInnings(){
+  const c = state.cricket;
+  if(c.innings === 1){
+    // snapshot innings 1 stats before resetting, so we can compute match awards later
+    c.innings1 = JSON.parse(JSON.stringify({
+      battingStats: c.battingStats,
+      bowlingStats: c.bowlingStats,
+      battingTeamKey: c.battingTeamKey,
+      bowlingTeamKey: c.bowlingTeamKey
+    }));
+    c.firstInningsScore = c.score;
+    c.firstInningsTeamKey = c.battingTeamKey;
+    const newBatting = c.bowlingTeamKey;
+    const newBowling = c.battingTeamKey;
+    c.battingTeamKey = newBatting;
+    c.bowlingTeamKey = newBowling;
+    c.innings = 2;
+    c.target = c.firstInningsScore + 1;
+    c.score = 0; c.wickets = 0; c.ballsThisOver = 0; c.oversCompleted = 0;
+    c.striker = null; c.nonStriker = null; c.bowler = null;
+    c.battingStats = {}; c.bowlingStats = {}; c.ballFeed = []; c.prevBowler = null;
+    setState({screen:'ck-openers'});
+  } else {
+    setState({screen:'ck-result'});
+  }
+}
+
+function cricketPromptNewBowler(){
+  const c = state.cricket;
+  const bowlTeam = c[c.bowlingTeamKey];
+  openModal({type:'pick-bowler', options: bowlTeam.players.filter(p=>p!==c.prevBowler)});
+}
+
+function cricketAddBall(runs, legal, extraLabel){
+  pushUndoSnapshot();
+  const c = state.cricket;
+  if(legal){
+    c.battingStats[c.striker].balls++;
+    c.bowlingStats[c.bowler].balls++;
+  }
+  c.battingStats[c.striker].runs += (extraLabel ? 0 : runs);
+  c.bowlingStats[c.bowler].runs += runs;
+  c.score += runs;
+  c.ballFeed.push(extraLabel ? extraLabel : String(runs));
+
+  if(legal){
+    c.ballsThisOver++;
+    if(runs % 2 === 1) cricketSwapStrike();
+    if(c.ballsThisOver >= 6){
+      c.oversCompleted++;
+      c.ballsThisOver = 0;
+      cricketSwapStrike();
+      c.prevBowler = c.bowler;
+      if(cricketCheckInningsEnd()) return;
+      cricketPromptNewBowler();
+      return;
+    }
+  }
+  if(cricketCheckInningsEnd()) return;
+  render();
+}
+
+function cricketAddNoBall(runsOffBat){
+  pushUndoSnapshot();
+  const c = state.cricket;
+  const total = 1 + runsOffBat;
+  c.battingStats[c.striker].runs += runsOffBat;
+  c.bowlingStats[c.bowler].runs += total;
+  c.score += total;
+  c.ballFeed.push(runsOffBat > 0 ? ('Nb+'+runsOffBat) : 'Nb');
+  if(runsOffBat % 2 === 1) cricketSwapStrike();
+  if(cricketCheckInningsEnd()) return;
+  render();
+}
+
+function cricketHandleWicket(){
+  pushUndoSnapshot();
+  const c = state.cricket;
+  const bowlerStats = c.bowlingStats[c.bowler];
+  c.battingStats[c.striker].balls++;
+  bowlerStats.balls++;
+  bowlerStats.wickets++;
+  c.wickets++;
+  c.ballFeed.push('W');
+  c.ballsThisOver++;
+  const outBatsman = c.striker;
+  if(c.ballsThisOver >= 6){
+    c.oversCompleted++;
+    c.ballsThisOver = 0;
+    c.prevBowler = c.bowler;
+  }
+  if(cricketCheckInningsEnd()) return;
+  const usedPlayers = new Set([...Object.keys(c.battingStats)]);
+  const available = c[c.battingTeamKey].players.filter(p=> !usedPlayers.has(p));
+  if(available.length === 0){ cricketFinishInnings(); return; }
+  openModal({type:'pick-batsman', options: available, replacing: outBatsman});
+}
+
 /* ================= CRICKET: RESULT ================= */
+function computeMatchAwards(c){
+  const battingMerged = {...(c.innings1 ? c.innings1.battingStats : {}), ...c.battingStats};
+  const bowlingMerged = {...(c.innings1 ? c.innings1.bowlingStats : {}), ...c.bowlingStats};
+
+  let topRunsName = null, topRuns = -1;
+  Object.entries(battingMerged).forEach(([name, s])=>{
+    if(s.runs > topRuns){ topRuns = s.runs; topRunsName = name; }
+  });
+
+  let topWicketsName = null, topWickets = -1, topWicketsRuns = Infinity;
+  Object.entries(bowlingMerged).forEach(([name, s])=>{
+    if(s.wickets > topWickets || (s.wickets === topWickets && s.runs < topWicketsRuns)){
+      topWickets = s.wickets; topWicketsName = name; topWicketsRuns = s.runs;
+    }
+  });
+
+  const impact = {};
+  Object.entries(battingMerged).forEach(([name, s])=>{
+    impact[name] = impact[name] || {runs:0, wickets:0};
+    impact[name].runs += s.runs;
+  });
+  Object.entries(bowlingMerged).forEach(([name, s])=>{
+    impact[name] = impact[name] || {runs:0, wickets:0};
+    impact[name].wickets += s.wickets;
+  });
+  let motmName = null, motmScore = -1, motmStats = null;
+  Object.entries(impact).forEach(([name, s])=>{
+    const score = s.runs + s.wickets*20;
+    if(score > motmScore){ motmScore = score; motmName = name; motmStats = s; }
+  });
+
+  return {
+    motm: motmName ? {name: motmName, runs: motmStats.runs, wickets: motmStats.wickets} : null,
+    topRuns: topRunsName ? {name: topRunsName, runs: topRuns, balls: battingMerged[topRunsName].balls} : null,
+    topWickets: (topWicketsName && topWickets > 0) ? {name: topWicketsName, wickets: topWickets, runs: topWicketsRuns} : null
+  };
+}
+
 function screenCricketResult(){
   const c = state.cricket;
   const firstKey = c.firstInningsTeamKey;
@@ -798,6 +969,8 @@ function screenCricketResult(){
     resultText = `${c[firstKey].name} win by ${firstScore - secondScore} run${(firstScore-secondScore)===1?'':'s'}`;
   }
 
+  const awards = computeMatchAwards(c);
+
   const wrap = el(`<div>
     <div class="result-hero">
     <div class="trophy">
@@ -812,6 +985,37 @@ function screenCricketResult(){
       <h2>${esc(resultText)}</h2>
       <p>${esc(c[firstKey].name)} ${firstScore} · ${esc(c[secondKey].name)} ${secondScore}</p>
     </div>
+
+    <div class="awards-grid">
+      ${awards.motm ? `
+      <div class="award-card motm">
+        <div class="award-icon">🌟</div>
+        <div>
+          <div class="award-label">Player of the Match</div>
+          <div class="award-name">${esc(awards.motm.name)}</div>
+        </div>
+        <div class="award-stat">${awards.motm.runs} runs${awards.motm.wickets ? ' · '+awards.motm.wickets+' wkt'+(awards.motm.wickets===1?'':'s') : ''}</div>
+      </div>` : ''}
+      ${awards.topRuns ? `
+      <div class="award-card">
+        <div class="award-icon">🏏</div>
+        <div>
+          <div class="award-label">Most Runs</div>
+          <div class="award-name">${esc(awards.topRuns.name)}</div>
+        </div>
+        <div class="award-stat">${awards.topRuns.runs} (${awards.topRuns.balls})</div>
+      </div>` : ''}
+      ${awards.topWickets ? `
+      <div class="award-card">
+        <div class="award-icon">🎯</div>
+        <div>
+          <div class="award-label">Most Wickets</div>
+          <div class="award-name">${esc(awards.topWickets.name)}</div>
+        </div>
+        <div class="award-stat">${awards.topWickets.wickets}/${awards.topWickets.runs}</div>
+      </div>` : ''}
+    </div>
+
     <button class="btn btn-red" id="newMatchBtn">Start new match</button>
   </div>`);
   wrap.querySelector('#newMatchBtn').onclick = ()=> setState({screen:'ck-setup', cricket:null});
@@ -823,7 +1027,52 @@ function renderModal(){
   if(modal.type === 'pickle-score') return renderPickleScoreModal(modal);
   if(modal.type === 'pick-bowler') return renderPickBowlerModal(modal);
   if(modal.type === 'pick-batsman') return renderPickBatsmanModal(modal);
+  if(modal.type === 'noball-runs') return renderNoBallRunsModal(modal);
+  if(modal.type === 'resume-session') return renderResumeSessionModal(modal);
   return el('<div></div>');
+}
+
+function renderResumeSessionModal(m){
+  const wrap = el(`<div class="modal-overlay">
+    <div class="modal">
+      <h3>Resume last session?</h3>
+      <div class="msub">Looks like a match was still in progress. Pick up right where it left off, or start clean.</div>
+      <div class="btn-row">
+        <button class="btn btn-outline" id="discardBtn">Start fresh</button>
+        <button class="btn btn-amber" id="resumeBtn">Resume match</button>
+      </div>
+    </div>
+  </div>`);
+  wrap.querySelector('#discardBtn').onclick = ()=>{
+    clearSession();
+    modal = null;
+    render();
+  };
+  wrap.querySelector('#resumeBtn').onclick = ()=>{
+    state = m.saved;
+    modal = null;
+    render();
+  };
+  return wrap;
+}
+
+function renderNoBallRunsModal(m){
+  const wrap = el(`<div class="modal-overlay">
+    <div class="modal">
+      <h3>No ball — runs off the bat?</h3>
+      <div class="msub">The 1-run penalty is added automatically on top</div>
+      <div class="pill-select" id="opts">
+        ${[0,1,2,3,4,6].map(r=>`<div class="pill" data-r="${r}">${r}</div>`).join('')}
+      </div>
+    </div>
+  </div>`);
+  wrap.querySelectorAll('.pill').forEach(p=>{
+    p.onclick = ()=>{
+      modal = null;
+      cricketAddNoBall(parseInt(p.dataset.r));
+    };
+  });
+  return wrap;
 }
 
 function renderPickBowlerModal(m){
@@ -870,7 +1119,14 @@ function renderPickBatsmanModal(m){
   return wrap;
 }
 
-render();
+(function initApp(){
+  const saved = loadSession();
+  if(saved && saved.screen && saved.screen !== 'home'){
+    modal = {type:'resume-session', saved};
+  }
+  render();
+})();
+
 </script>
 </body>
 </html>
