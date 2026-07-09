@@ -897,8 +897,11 @@ function cricketPromptNewBatsman(outBatsman, overEnded, vacantRole){
   const usedPlayers = new Set(Object.keys(c.battingStats));
   const available = c[c.battingTeamKey].players.filter(p=> !usedPlayers.has(p));
   if(available.length === 0){
-    // bench is empty but (thanks to Patch 1) we're not truly all out yet - last man bats alone
     c.lastManStanding = true;
+    if(vacantRole === 'striker' && c.nonStriker){
+      c.striker = c.nonStriker; // survivor must bat from the striker's end to face balls
+      c.nonStriker = null;
+    }
     if(overEnded){ cricketPromptNewBowler(); } else { render(); }
     return;
   }
