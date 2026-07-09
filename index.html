@@ -284,7 +284,7 @@ function isMidMatch(){
   if(state.screen === 'pk-play'){
     return state.pickle.boxes.some(b=> b.schedule.some(m=>!m.played));
   }
-  return ['ck-toss','ck-openers','ck-live'].includes(state.screen);
+  return ['ck-toss','ck-openers','ck-live','ck-rematch-choice'].includes(state.screen);
 }
 
 window.addEventListener('beforeunload', function(e){
@@ -371,6 +371,7 @@ function renderScreen(){
     case 'ck-openers': return screenCricketOpeners();
     case 'ck-live': return screenCricketLive();
     case 'ck-result': return screenCricketResult();
+    case 'ck-rematch-choice': return screenCricketRematchChoice();
     default: return screenHome();
   }
 }
@@ -756,12 +757,12 @@ function screenCricketLive(){
 
     <div class="batters">
       <div class="batter-row striker">
-        <div class="b-name"><span class="star">●</span>${esc(c.striker)}</div>
-        <div class="b-stats">${c.battingStats[c.striker].runs} (${c.battingStats[c.striker].balls})</div>
+        <div class="b-name"><span class="star">●</span>${c.striker ? esc(c.striker) : 'Selecting new batsman…'}</div>
+        <div class="b-stats">${c.striker ? `${c.battingStats[c.striker].runs} (${c.battingStats[c.striker].balls})` : '—'}</div>
       </div>
       <div class="batter-row">
-        <div class="b-name">${esc(c.nonStriker)}</div>
-        <div class="b-stats">${c.battingStats[c.nonStriker].runs} (${c.battingStats[c.nonStriker].balls})</div>
+        <div class="b-name">${c.nonStriker ? esc(c.nonStriker) : 'Selecting new batsman…'}</div>
+        <div class="b-stats">${c.nonStriker ? `${c.battingStats[c.nonStriker].runs} (${c.battingStats[c.nonStriker].balls})` : '—'}</div>
       </div>
     </div>
     <div class="bowler-row">
@@ -791,7 +792,7 @@ function screenCricketLive(){
   wrap.querySelector('#wideBtn').onclick = ()=> cricketAddBall(1, false, 'Wd');
   wrap.querySelector('#noballBtn').onclick = ()=> openModal({type:'noball-runs'});
   wrap.querySelector('#swapBtn').onclick = ()=>{ pushUndoSnapshot(); cricketSwapStrike(); render(); };
-  wrap.querySelector('#wicketBtn').onclick = cricketHandleWicket;
+  wrap.querySelector('#wicketBtn').onclick = ()=> openModal({type:'dismissal-type'});
   wrap.querySelector('#endInningsBtn').onclick = ()=>{ pushUndoSnapshot(); cricketFinishInnings(); };
   wrap.querySelector('#undoBtn').onclick = performUndo;
 
@@ -891,7 +892,16 @@ function cricketAddNoBall(runsOffBat){
   render();
 }
 
-function cricketHandleWicket(){
+function cricketPromptNewBatsman(outBatsman, overEnded, vacantRole){
+  const c = state.cricket;
+  const usedPlayers = new Set(Object.keys(c.battingStats));
+  const available = c[c.battingTeamKey].players.filter(p=> !usedPlayers.has(p));
+  if(available.length === 0){ cricketFinishInnings(); return; }
+  openModal({type:'pick-batsman', options: available, replacing: outBatsman, overEnded: !!overEnded, vacantRole: vacantRole || 'striker'});
+}
+
+function cricketApplyBowlerWicket(){
+  modal = null;
   pushUndoSnapshot();
   const c = state.cricket;
   const bowlerStats = c.bowlingStats[c.bowler];
@@ -902,16 +912,54 @@ function cricketHandleWicket(){
   c.ballFeed.push('W');
   c.ballsThisOver++;
   const outBatsman = c.striker;
+  c.striker = null;
+  let overEnded = false;
   if(c.ballsThisOver >= 6){
     c.oversCompleted++;
     c.ballsThisOver = 0;
     c.prevBowler = c.bowler;
+    overEnded = true;
   }
   if(cricketCheckInningsEnd()) return;
-  const usedPlayers = new Set([...Object.keys(c.battingStats)]);
-  const available = c[c.battingTeamKey].players.filter(p=> !usedPlayers.has(p));
-  if(available.length === 0){ cricketFinishInnings(); return; }
-  openModal({type:'pick-batsman', options: available, replacing: outBatsman});
+  cricketPromptNewBatsman(outBatsman, overEnded, 'striker');
+}
+
+function cricketApplyRunOut(outPlayerName, runsCompleted){
+  modal = null;
+  pushUndoSnapshot();
+  const c = state.cricket;
+  const origStriker = c.striker, origNonStriker = c.nonStriker;
+
+  // runs completed before the mix-up: credited to the striker (who hit the ball) and the bowler's figures,
+  // but the wicket itself is NOT credited to the bowler
+  c.battingStats[origStriker].runs += runsCompleted;
+  c.battingStats[origStriker].balls++;
+  c.bowlingStats[c.bowler].runs += runsCompleted;
+  c.score += runsCompleted;
+  c.wickets++;
+  c.ballFeed.push(runsCompleted > 0 ? ('RO+'+runsCompleted) : 'RO');
+  c.ballsThisOver++;
+
+  // fully completed runs mean the batsmen crossed and swapped ends - figure out
+  // which physical end the dismissed player ended up at, and who survives where
+  const crossed = (runsCompleted % 2 === 1);
+  const isOrigStriker = (outPlayerName === origStriker);
+  const outPlayerEnd = isOrigStriker ? (crossed ? 'nonStriker' : 'striker') : (crossed ? 'striker' : 'nonStriker');
+  const survivorName = isOrigStriker ? origNonStriker : origStriker;
+  const survivorEnd = outPlayerEnd === 'striker' ? 'nonStriker' : 'striker';
+
+  c[outPlayerEnd] = null;
+  c[survivorEnd] = survivorName;
+
+  let overEnded = false;
+  if(c.ballsThisOver >= 6){
+    c.oversCompleted++;
+    c.ballsThisOver = 0;
+    c.prevBowler = c.bowler;
+    overEnded = true;
+  }
+  if(cricketCheckInningsEnd()) return;
+  cricketPromptNewBatsman(outPlayerName, overEnded, outPlayerEnd);
 }
 
 /* ================= CRICKET: RESULT ================= */
@@ -951,6 +999,62 @@ function computeMatchAwards(c){
     topRuns: topRunsName ? {name: topRunsName, runs: topRuns, balls: battingMerged[topRunsName].balls} : null,
     topWickets: (topWicketsName && topWickets > 0) ? {name: topWicketsName, wickets: topWickets, runs: topWicketsRuns} : null
   };
+}
+
+function getMatchWinnerKey(c){
+  const firstKey = c.firstInningsTeamKey;
+  const secondKey = firstKey === 'teamA' ? 'teamB' : 'teamA';
+  if(c.score >= c.target) return secondKey;
+  if(c.score === c.firstInningsScore) return null; // tie
+  return firstKey;
+}
+
+function startRematchSameTeams(){
+  const c = state.cricket;
+  let winnerKey = getMatchWinnerKey(c);
+  if(!winnerKey) winnerKey = cryptoRandom() < 0.5 ? 'teamA' : 'teamB'; // tie - coin decides
+
+  state.cricket = {
+    teamA: c.teamA, teamB: c.teamB, overs: c.overs,
+    tossWinner: null, tossChoice: null,
+    battingTeamKey: null, bowlingTeamKey: null,
+    innings: 1,
+    firstInningsScore: null, firstInningsTeamKey: null,
+    score: 0, wickets: 0, ballsThisOver: 0, oversCompleted: 0,
+    striker: null, nonStriker: null, bowler: null,
+    dismissed: [], battingStats: {}, bowlingStats: {},
+    ballFeed: [], prevBowler: null,
+    innings1: null,
+    rematchWinnerKey: winnerKey
+  };
+  setState({screen:'ck-rematch-choice'});
+}
+
+function screenCricketRematchChoice(){
+  const c = state.cricket;
+  const winnerKey = c.rematchWinnerKey;
+  const winner = c[winnerKey];
+  const wrap = el(`<div>
+    <h1 class="hero" style="font-size:34px;">Same teams, new match</h1>
+    <p class="sub">${esc(c.teamA.name)} vs ${esc(c.teamB.name)}</p>
+    <p class="sub" style="margin-top:16px;"><b style="color:var(--ink);">${esc(winner.name)}</b> won last time — bat or bowl?</p>
+    <div class="btn-row">
+      <button class="btn btn-green" id="chooseBat">Bat</button>
+      <button class="btn btn-outline" id="chooseBowl">Bowl</button>
+    </div>
+  </div>`);
+  wrap.querySelector('#chooseBat').onclick = ()=> setupRematchInnings(winnerKey, winnerKey);
+  wrap.querySelector('#chooseBowl').onclick = ()=> setupRematchInnings(winnerKey, winnerKey==='teamA'?'teamB':'teamA');
+  return wrap;
+}
+
+function setupRematchInnings(tossWinnerKey, battingKey){
+  const c = state.cricket;
+  c.tossWinner = tossWinnerKey;
+  c.tossChoice = battingKey===tossWinnerKey ? 'bat' : 'bowl';
+  c.battingTeamKey = battingKey;
+  c.bowlingTeamKey = battingKey==='teamA' ? 'teamB' : 'teamA';
+  setState({screen:'ck-openers'});
 }
 
 function screenCricketResult(){
@@ -1016,8 +1120,10 @@ function screenCricketResult(){
       </div>` : ''}
     </div>
 
-    <button class="btn btn-red" id="newMatchBtn">Start new match</button>
+    <button class="btn btn-amber" id="rematchBtn">Play again — same teams</button>
+    <button class="btn btn-outline" id="newMatchBtn">Start new match</button>
   </div>`);
+  wrap.querySelector('#rematchBtn').onclick = ()=> startRematchSameTeams();
   wrap.querySelector('#newMatchBtn').onclick = ()=> setState({screen:'ck-setup', cricket:null});
   return wrap;
 }
@@ -1029,6 +1135,9 @@ function renderModal(){
   if(modal.type === 'pick-batsman') return renderPickBatsmanModal(modal);
   if(modal.type === 'noball-runs') return renderNoBallRunsModal(modal);
   if(modal.type === 'resume-session') return renderResumeSessionModal(modal);
+  if(modal.type === 'dismissal-type') return renderDismissalTypeModal();
+  if(modal.type === 'runout-batsman') return renderRunoutBatsmanModal();
+  if(modal.type === 'runout-runs') return renderRunoutRunsModal(modal);
   return el('<div></div>');
 }
 
@@ -1110,11 +1219,66 @@ function renderPickBatsmanModal(m){
   m.options.forEach(name=>{
     const p = el(`<div class="pill">${esc(name)}</div>`);
     p.onclick = ()=>{
-      c.striker = name;
+      c[m.vacantRole || 'striker'] = name;
       c.battingStats[name] = {runs:0, balls:0};
-      closeModal();
+      modal = null;
+      if(m.overEnded){
+        cricketPromptNewBowler();
+      } else {
+        render();
+      }
     };
     opts.appendChild(p);
+  });
+  return wrap;
+}
+
+function renderDismissalTypeModal(){
+  const wrap = el(`<div class="modal-overlay">
+    <div class="modal">
+      <h3>How out?</h3>
+      <div class="msub">Bowled / caught / LBW / stumped credit the bowler. A run out doesn't.</div>
+      <div class="btn-row">
+        <button class="btn btn-outline" id="bowlerWkt">Bowler wicket</button>
+        <button class="btn btn-red" id="runOutBtn">Run out</button>
+      </div>
+    </div>
+  </div>`);
+  wrap.querySelector('#bowlerWkt').onclick = cricketApplyBowlerWicket;
+  wrap.querySelector('#runOutBtn').onclick = ()=> openModal({type:'runout-batsman'});
+  return wrap;
+}
+
+function renderRunoutBatsmanModal(){
+  const c = state.cricket;
+  const wrap = el(`<div class="modal-overlay">
+    <div class="modal">
+      <h3>Run out — who's out?</h3>
+      <div class="msub">Pick the batsman who didn't make it home</div>
+      <div class="pill-select" id="opts"></div>
+    </div>
+  </div>`);
+  const opts = wrap.querySelector('#opts');
+  [c.striker, c.nonStriker].forEach(name=>{
+    const p = el(`<div class="pill">${esc(name)}</div>`);
+    p.onclick = ()=>{ openModal({type:'runout-runs', outPlayer:name}); };
+    opts.appendChild(p);
+  });
+  return wrap;
+}
+
+function renderRunoutRunsModal(m){
+  const wrap = el(`<div class="modal-overlay">
+    <div class="modal">
+      <h3>Runs completed before the run out?</h3>
+      <div class="msub">Only fully completed runs, not the one they were attempting</div>
+      <div class="pill-select" id="opts">
+        ${[0,1,2,3].map(r=>`<div class="pill" data-r="${r}">${r}</div>`).join('')}
+      </div>
+    </div>
+  </div>`);
+  wrap.querySelectorAll('.pill').forEach(p=>{
+    p.onclick = ()=> cricketApplyRunOut(m.outPlayer, parseInt(p.dataset.r));
   });
   return wrap;
 }
