@@ -757,11 +757,11 @@ function screenCricketLive(){
 
     <div class="batters">
       <div class="batter-row striker">
-        <div class="b-name"><span class="star">●</span>${c.striker ? esc(c.striker) : 'Selecting new batsman…'}</div>
+        <div class="b-name"><span class="star">●</span>${c.striker ? esc(c.striker) : (c.lastManStanding ? 'No partner — last man' : 'Selecting new batsman…')}</div>
         <div class="b-stats">${c.striker ? `${c.battingStats[c.striker].runs} (${c.battingStats[c.striker].balls})` : '—'}</div>
       </div>
       <div class="batter-row">
-        <div class="b-name">${c.nonStriker ? esc(c.nonStriker) : 'Selecting new batsman…'}</div>
+        <div class="b-name">${c.nonStriker ? esc(c.nonStriker) : (c.lastManStanding ? 'No partner — last man' : 'Selecting new batsman…')}</div>
         <div class="b-stats">${c.nonStriker ? `${c.battingStats[c.nonStriker].runs} (${c.battingStats[c.nonStriker].balls})` : '—'}</div>
       </div>
     </div>
@@ -802,14 +802,14 @@ function screenCricketLive(){
 /* ---- Cricket scoring logic (module-level so modals can call it too) ---- */
 function cricketSwapStrike(){
   const c = state.cricket;
+  if(!c.striker || !c.nonStriker) return; // last man batting alone - nobody to swap with
   const tmp = c.striker; c.striker = c.nonStriker; c.nonStriker = tmp;
 }
-
 function cricketCheckInningsEnd(){
   const c = state.cricket;
   const oversDone = c.oversCompleted >= c.overs;
   const chased = c.innings===2 && c.score >= c.target;
-  const allOut = c.wickets >= (c[c.battingTeamKey].players.length - 1);
+  const allOut = c.wickets >= c[c.battingTeamKey].players.length;
   if(allOut || oversDone || chased){
     cricketFinishInnings();
     return true;
@@ -896,7 +896,12 @@ function cricketPromptNewBatsman(outBatsman, overEnded, vacantRole){
   const c = state.cricket;
   const usedPlayers = new Set(Object.keys(c.battingStats));
   const available = c[c.battingTeamKey].players.filter(p=> !usedPlayers.has(p));
-  if(available.length === 0){ cricketFinishInnings(); return; }
+  if(available.length === 0){
+    // bench is empty but (thanks to Patch 1) we're not truly all out yet - last man bats alone
+    c.lastManStanding = true;
+    if(overEnded){ cricketPromptNewBowler(); } else { render(); }
+    return;
+  }
   openModal({type:'pick-batsman', options: available, replacing: outBatsman, overEnded: !!overEnded, vacantRole: vacantRole || 'striker'});
 }
 
@@ -1259,7 +1264,7 @@ function renderRunoutBatsmanModal(){
     </div>
   </div>`);
   const opts = wrap.querySelector('#opts');
-  [c.striker, c.nonStriker].forEach(name=>{
+  [c.striker, c.nonStriker].filter(Boolean).forEach(name=>{
     const p = el(`<div class="pill">${esc(name)}</div>`);
     p.onclick = ()=>{ openModal({type:'runout-runs', outPlayer:name}); };
     opts.appendChild(p);
